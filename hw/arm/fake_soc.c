@@ -1,12 +1,13 @@
 #include "qemu/osdep.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
+#include "qemu/module.h"
 #include "hw/sysbus.h"
-#include "hw/arm/virt.h"
+#include "hw/boards.h"
+#include "hw/intc/arm_gicv3_common.h"
 #include "hw/block/flash.h"
 #include "hw/vfio/vfio-amd-xgbe.h"
 #include "hw/loader.h"
-#include "qemu/module.h"
 #include "hw/platform-bus.h"
 #include "hw/irq.h"
 #include "kvm_arm.h"
@@ -26,23 +27,39 @@ enum {
     FAKE_SMMU,
     FAKE_UART,
     FAKE_GPIO,
+    FAKE_VIRTIO,
     FAKE_SECURE_MEM
 };
 
 static const MemMapEntry fake_memmap[] = {
-    [FAKE_ROM] =                { 0x00000000, 0x04000000 }, // 64M boot ROM
-    [FAKE_NOR_FLASH] =          { 0x04000000, 0x01000000 }, // 16M nor flash
-    [FAKE_SECURE_MEM] =         { 0x08000000, 0x08000000 },
-    [FAKE_CPU_ITF] =            { 0x10000000, 0x00010000 },
-    [FAKE_GIC_DIST] =           { 0x10010000, 0x00010000 },
-    [FAKE_GIC_REDIST] =         { 0x10020000, 0x04000000 }, // GICV3_REDIST_SIZE
-    [FAKE_SMMU] =               { 0x14000000, 0x00020000 },
-    [FAKE_UART] =               { 0x20000000, 0x00001000 },
-    [FAKE_GPIO] =               { 0x20001000, 0x00001000 },
-    [FAKE_MEM] =                { 0x30000000ULL, 0x40000000ULL },
+    [FAKE_ROM] =        { 0x00000000, 0x04000000 }, // 64M boot ROM
+    [FAKE_NOR_FLASH] =  { 0x04000000, 0x01000000 }, // 16M nor flash
+    [FAKE_SECURE_MEM] = { 0x08000000, 0x08000000 },
+    [FAKE_CPU_ITF] =    { 0x10000000, 0x00010000 },
+    [FAKE_GIC_DIST] =   { 0x10010000, 0x00010000 },
+    [FAKE_GIC_REDIST] = { 0x10020000, 0x04000000 }, // GICV3_REDIST_SIZE
+    [FAKE_SMMU] =       { 0x14000000, 0x00020000 },
+    [FAKE_UART] =       { 0x20000000, 0x00001000 },
+    [FAKE_GPIO] =       { 0x20001000, 0x00001000 },
+    [FAKE_VIRTIO] =     { 0x20002000, 0x00000200 }, // size * NUM_VIRTIO_TRANSPORTS
+    [FAKE_MEM] =        { 0x30000000ULL, 0x40000000ULL },
+};
+
+static const int fake_irqmap[] = {
+    [FAKE_UART] = 0x10,
+    [FAKE_GPIO] = 0x11,
+    [FAKE_VIRTIO] = 0x12, /* + NUM_VIRTIO_TRANSPORTS */
 };
 
 #define NUM_IRQS 256
+
+#define ARCH_GIC_MAINT_IRQ  9
+#define ARCH_TIMER_VIRT_IRQ   11
+#define ARCH_TIMER_S_EL1_IRQ  13
+#define ARCH_TIMER_NS_EL1_IRQ 14
+#define ARCH_TIMER_NS_EL2_IRQ 10
+
+#define VIRTUAL_PMU_IRQ 7
 
 static void create_gic(FakeSocState *fss)
 {
@@ -74,8 +91,8 @@ static void create_gic(FakeSocState *fss)
         const int timer_irq[] = {
             [GTIMER_PHYS] = ARCH_TIMER_NS_EL1_IRQ,
             [GTIMER_VIRT] = ARCH_TIMER_VIRT_IRQ,
-            [GTIMER_HYP]  = ARCH_TIMER_NS_EL2_IRQ,
-            [GTIMER_SEC]  = ARCH_TIMER_S_EL1_IRQ,
+            [GTIMER_HYP] = ARCH_TIMER_NS_EL2_IRQ,
+            [GTIMER_SEC] = ARCH_TIMER_S_EL1_IRQ,
         };
 
         for (irq = 0; irq < ARRAY_SIZE(timer_irq); irq++) {
@@ -91,11 +108,6 @@ static void create_gic(FakeSocState *fss)
         sysbus_connect_irq(gicbusdev, i + 3 * fss->smp_cpus, qdev_get_gpio_in(cpudev, ARM_CPU_VFIQ));
     }
 }
-
-static const int fake_irqmap[] = {
-    [FAKE_UART] = 8,
-    [FAKE_GPIO] = 9,
-};
 
 static void create_uart(FakeSocState *fss, int uart, MemoryRegion *mem, Chardev *chr)
 {
@@ -138,6 +150,47 @@ static void create_pflash(FakeSocState *fss, int pflash, MemoryRegion *mem, Driv
     qdev_prop_set_uint32(dev, "num-blocks", fake_memmap[pflash].size / FAKE_FLASH_SECTOR_SIZE);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
     memory_region_add_subregion(mem, fake_memmap[pflash].base, sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+}
+
+#define FAKE_VIRTIO_TRANSPORTS_NUM 8
+
+static void create_virtio(FakeSocState *fss)
+{
+    int i;
+    hwaddr size = fake_memmap[FAKE_VIRTIO].size;
+
+    /* We create the transports in forwards order. Since qbus_realize()
+     * prepends (not appends) new child buses, the incrementing loop below will
+     * create a list of virtio-mmio buses with decreasing base addresses.
+     *
+     * When a -device option is processed from the command line,
+     * qbus_find_recursive() picks the next free virtio-mmio bus in forwards
+     * order. The upshot is that -device options in increasing command line
+     * order are mapped to virtio-mmio buses with decreasing base addresses.
+     *
+     * When this code was originally written, that arrangement ensured that the
+     * guest Linux kernel would give the lowest "name" (/dev/vda, eth0, etc) to
+     * the first -device on the command line. (The end-to-end order is a
+     * function of this loop, qbus_realize(), qbus_find_recursive(), and the
+     * guest kernel's name-to-address assignment strategy.)
+     *
+     * Meanwhile, the kernel's traversal seems to have been reversed; see eg.
+     * the message, if not necessarily the code, of commit 70161ff336.
+     * Therefore the loop now establishes the inverse of the original intent.
+     *
+     * Unfortunately, we can't counteract the kernel change by reversing the
+     * loop; it would break existing command lines.
+     *
+     * In any case, the kernel makes no guarantee about the stability of
+     * enumeration order of virtio devices (as demonstrated by it changing
+     * between kernel versions). For reliable and stable identification
+     * of disks users must use UUIDs or similar mechanisms.
+     */
+    for (i = 0; i < FAKE_VIRTIO_TRANSPORTS_NUM; i++) {
+        int irq = fake_irqmap[FAKE_VIRTIO] + i;
+        hwaddr base = fake_memmap[FAKE_VIRTIO].base + i * size;
+        sysbus_create_simple("virtio-mmio", base, qdev_get_gpio_in(fss->gic, irq));
+    }
 }
 
 static void fake_realize(DeviceState *socdev, Error **errp)
@@ -195,6 +248,7 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     //pl011_luminary_create(fake_memmap[FAKE_UART].base, qdev_get_gpio_in(gic, fake_irqmap[FAKE_UART]), serial_hd(0));
     create_uart(s, FAKE_UART, system_mem, serial_hd(FAKE_SERIAL_INDEX));
     create_pflash(s, FAKE_NOR_FLASH, system_mem, drive_get(IF_PFLASH, 0, FAKE_PFLASH_INDEX)); /* Map legacy -drive if=pflash to machine properties */
+    create_virtio(s);
 }
 
 static void fake_class_init(ObjectClass *oc, void *data)
