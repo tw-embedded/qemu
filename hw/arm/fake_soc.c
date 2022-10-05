@@ -97,7 +97,7 @@ static const int fake_irqmap[] = {
     [FAKE_GPIO] = 9,
 };
 
-static void create_uart(const FakeSocState *fss, int uart, MemoryRegion *mem, Chardev *chr)
+static void create_uart(FakeSocState *fss, int uart, MemoryRegion *mem, Chardev *chr)
 {
     hwaddr base = fake_memmap[uart].base;
     int irq = fake_irqmap[uart];
@@ -112,14 +112,11 @@ static void create_uart(const FakeSocState *fss, int uart, MemoryRegion *mem, Ch
 
 #define FAKE_FLASH_SECTOR_SIZE (256 * KiB)
 
-static PFlashCFI01 *fake_flash_create(FakeSocState *fss, const char *name, const char *alias_prop_name)
+static void create_pflash(FakeSocState *fss, int pflash, MemoryRegion *mem, DriveInfo *dev_info)
 {
-    /*
-     * Create a single flash device.  We use the same parameters as
-     * the flash devices on the Versatile Express board.
-     */
+#define PFLASH_NAME "fake.pflash"
+    /* Create a single flash device.  We use the same parameters as the flash devices on the Versatile Express board. */
     DeviceState *dev = qdev_new(TYPE_PFLASH_CFI01);
-
     qdev_prop_set_uint64(dev, "sector-length", FAKE_FLASH_SECTOR_SIZE);
     qdev_prop_set_uint8(dev, "width", 4);
     qdev_prop_set_uint8(dev, "device-width", 2);
@@ -128,22 +125,19 @@ static PFlashCFI01 *fake_flash_create(FakeSocState *fss, const char *name, const
     qdev_prop_set_uint16(dev, "id1", 0x18);
     qdev_prop_set_uint16(dev, "id2", 0x00);
     qdev_prop_set_uint16(dev, "id3", 0x00);
-    qdev_prop_set_string(dev, "name", name);
-    object_property_add_child(OBJECT(fss), name, OBJECT(dev));
-    object_property_add_alias(OBJECT(fss), alias_prop_name, OBJECT(dev), "drive");
-    return PFLASH_CFI01(dev);
-}
+    qdev_prop_set_string(dev, "name", PFLASH_NAME);
+    object_property_add_child(OBJECT(fss), PFLASH_NAME, OBJECT(dev));
+    object_property_add_alias(OBJECT(fss), "pflash", OBJECT(dev), "drive");
+    fss->flash = PFLASH_CFI01(dev);
 
-static void map_flash(PFlashCFI01 *flash, hwaddr base, hwaddr size, MemoryRegion *sysmem)
-{
-    DeviceState *dev = DEVICE(flash);
+    pflash_cfi01_legacy_drive(fss->flash, dev_info);
 
-    assert(QEMU_IS_ALIGNED(size, FAKE_FLASH_SECTOR_SIZE));
-    assert(size / FAKE_FLASH_SECTOR_SIZE <= UINT32_MAX);
-    qdev_prop_set_uint32(dev, "num-blocks", size / FAKE_FLASH_SECTOR_SIZE);
+    /* map flash */
+    assert(QEMU_IS_ALIGNED(fake_memmap[pflash].size, FAKE_FLASH_SECTOR_SIZE));
+    assert(fake_memmap[pflash].size / FAKE_FLASH_SECTOR_SIZE <= UINT32_MAX);
+    qdev_prop_set_uint32(dev, "num-blocks", fake_memmap[pflash].size / FAKE_FLASH_SECTOR_SIZE);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
-
-    memory_region_add_subregion(sysmem, base, sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+    memory_region_add_subregion(mem, fake_memmap[pflash].base, sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
 }
 
 static void fake_realize(DeviceState *socdev, Error **errp)
@@ -196,13 +190,11 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     object_property_set_link(cpu0, "secure-memory", OBJECT(bootrom), NULL);
 
     // peripheral
-    //pl011_luminary_create(fake_memmap[FAKE_UART].base, qdev_get_gpio_in(gic, fake_irqmap[FAKE_UART]), serial_hd(0));
-    create_uart(s, FAKE_UART, system_mem, serial_hd(0));
-    /* Map legacy -drive if=pflash to machine properties */
-    s->flash = fake_flash_create(s, "fake.flash", "pflash");
+#define FAKE_SERIAL_INDEX 0
 #define FAKE_PFLASH_INDEX 0
-    pflash_cfi01_legacy_drive(s->flash, drive_get(IF_PFLASH, 0, FAKE_PFLASH_INDEX));
-    map_flash(s->flash, fake_memmap[FAKE_NOR_FLASH].base, fake_memmap[FAKE_NOR_FLASH].size, system_mem);
+    //pl011_luminary_create(fake_memmap[FAKE_UART].base, qdev_get_gpio_in(gic, fake_irqmap[FAKE_UART]), serial_hd(0));
+    create_uart(s, FAKE_UART, system_mem, serial_hd(FAKE_SERIAL_INDEX));
+    create_pflash(s, FAKE_NOR_FLASH, system_mem, drive_get(IF_PFLASH, 0, FAKE_PFLASH_INDEX)); /* Map legacy -drive if=pflash to machine properties */
 }
 
 static void fake_class_init(ObjectClass *oc, void *data)
@@ -228,4 +220,3 @@ static void fake_soc_init(void)
     type_register_static(&fake_type);
 }
 type_init(fake_soc_init)
-

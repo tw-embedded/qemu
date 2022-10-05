@@ -9,7 +9,7 @@ struct FakeSocState {
     char *rom_file; // image file
     unsigned int smp_cpus; // 2
     DeviceState *gic; // gic v3
-    PFlashCFI01 *flash; // uboot or uefi configuration
+    PFlashCFI01 *flash; // NV configuration of uboot or uefi
 };
 
 #define TYPE_FAKE_SOC "fake_soc"
