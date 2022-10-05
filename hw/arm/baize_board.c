@@ -23,7 +23,7 @@ static void bz_init(MachineState *machine)
 
     object_initialize_child(OBJECT(machine), "soc", &s->soc, TYPE_FAKE_SOC);
 
-    s->soc.norflash_file = machine->firmware;
+    s->soc.rom_file = machine->firmware;
 
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), NULL);
 

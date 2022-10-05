@@ -17,6 +17,7 @@
 #include "fake_soc.h"
 
 enum {
+    FAKE_ROM,
     FAKE_NOR_FLASH,
     FAKE_MEM,
     FAKE_CPU_ITF,
@@ -29,7 +30,8 @@ enum {
 };
 
 static const MemMapEntry fake_memmap[] = {
-    [FAKE_NOR_FLASH] =          { 0x00000000, 0x08000000 }, // 512M boot ROM
+    [FAKE_ROM] =                { 0x00000000, 0x04000000 }, // 64M boot ROM
+    [FAKE_NOR_FLASH] =          { 0x04000000, 0x01000000 }, // 16M nor flash
     [FAKE_SECURE_MEM] =         { 0x08000000, 0x08000000 },
     [FAKE_CPU_ITF] =            { 0x10000000, 0x00010000 },
     [FAKE_GIC_DIST] =           { 0x10010000, 0x00010000 },
@@ -108,6 +110,42 @@ static void create_uart(const FakeSocState *fss, int uart, MemoryRegion *mem, Ch
     sysbus_connect_irq(s, 0, qdev_get_gpio_in(fss->gic, irq));
 }
 
+#define FAKE_FLASH_SECTOR_SIZE (256 * KiB)
+
+static PFlashCFI01 *fake_flash_create(FakeSocState *fss, const char *name, const char *alias_prop_name)
+{
+    /*
+     * Create a single flash device.  We use the same parameters as
+     * the flash devices on the Versatile Express board.
+     */
+    DeviceState *dev = qdev_new(TYPE_PFLASH_CFI01);
+
+    qdev_prop_set_uint64(dev, "sector-length", FAKE_FLASH_SECTOR_SIZE);
+    qdev_prop_set_uint8(dev, "width", 4);
+    qdev_prop_set_uint8(dev, "device-width", 2);
+    qdev_prop_set_bit(dev, "big-endian", false);
+    qdev_prop_set_uint16(dev, "id0", 0x89);
+    qdev_prop_set_uint16(dev, "id1", 0x18);
+    qdev_prop_set_uint16(dev, "id2", 0x00);
+    qdev_prop_set_uint16(dev, "id3", 0x00);
+    qdev_prop_set_string(dev, "name", name);
+    object_property_add_child(OBJECT(fss), name, OBJECT(dev));
+    object_property_add_alias(OBJECT(fss), alias_prop_name, OBJECT(dev), "drive");
+    return PFLASH_CFI01(dev);
+}
+
+static void map_flash(PFlashCFI01 *flash, hwaddr base, hwaddr size, MemoryRegion *sysmem)
+{
+    DeviceState *dev = DEVICE(flash);
+
+    assert(QEMU_IS_ALIGNED(size, FAKE_FLASH_SECTOR_SIZE));
+    assert(size / FAKE_FLASH_SECTOR_SIZE <= UINT32_MAX);
+    qdev_prop_set_uint32(dev, "num-blocks", size / FAKE_FLASH_SECTOR_SIZE);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+
+    memory_region_add_subregion(sysmem, base, sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
+}
+
 static void fake_realize(DeviceState *socdev, Error **errp)
 {
     FakeSocState *s = FAKE_SOC(socdev);
@@ -138,28 +176,33 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     create_gic(s);
 
     // rom
-    MemoryRegion *norflash = g_new(MemoryRegion, 1);
-    memory_region_init_ram(norflash, NULL, "nor.flash", fake_memmap[FAKE_NOR_FLASH].size, NULL);
-    memory_region_set_readonly(norflash, true);
-    memory_region_add_subregion(system_mem, fake_memmap[FAKE_NOR_FLASH].base, norflash);
+    MemoryRegion *bootrom = g_new(MemoryRegion, 1);
+    memory_region_init_ram(bootrom, NULL, "boot.flash", fake_memmap[FAKE_ROM].size, NULL);
+    memory_region_set_readonly(bootrom, true);
+    memory_region_add_subregion(system_mem, fake_memmap[FAKE_ROM].base, bootrom);
     char *fname;
     int image_size;
-    fname = qemu_find_file(QEMU_FILE_TYPE_BIOS, s->norflash_file);
+    fname = qemu_find_file(QEMU_FILE_TYPE_BIOS, s->rom_file);
     if (!fname) {
-        error_report("Could not find ROM image '%s'", s->norflash_file);
+        error_report("Could not find ROM image '%s'", s->rom_file);
         exit(1);
     }
-    image_size = load_image_mr(fname, norflash);
+    image_size = load_image_mr(fname, bootrom);
     g_free(fname);
     if (image_size < 0) {
-        error_report("Could not load ROM image '%s'", s->norflash_file);
+        error_report("Could not load ROM image '%s'", s->rom_file);
         exit(1);
     }
-    object_property_set_link(cpu0, "secure-memory", OBJECT(norflash), NULL);
+    object_property_set_link(cpu0, "secure-memory", OBJECT(bootrom), NULL);
 
     // peripheral
     //pl011_luminary_create(fake_memmap[FAKE_UART].base, qdev_get_gpio_in(gic, fake_irqmap[FAKE_UART]), serial_hd(0));
     create_uart(s, FAKE_UART, system_mem, serial_hd(0));
+    /* Map legacy -drive if=pflash to machine properties */
+    s->flash = fake_flash_create(s, "fake.flash", "pflash");
+#define FAKE_PFLASH_INDEX 0
+    pflash_cfi01_legacy_drive(s->flash, drive_get(IF_PFLASH, 0, FAKE_PFLASH_INDEX));
+    map_flash(s->flash, fake_memmap[FAKE_NOR_FLASH].base, fake_memmap[FAKE_NOR_FLASH].size, system_mem);
 }
 
 static void fake_class_init(ObjectClass *oc, void *data)
