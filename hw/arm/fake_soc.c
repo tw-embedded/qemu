@@ -54,10 +54,11 @@ static const int fake_irqmap[] = {
 #define NUM_IRQS 256
 
 #define ARCH_GIC_MAINT_IRQ  9
-#define ARCH_TIMER_VIRT_IRQ   11
-#define ARCH_TIMER_S_EL1_IRQ  13
-#define ARCH_TIMER_NS_EL1_IRQ 14
-#define ARCH_TIMER_NS_EL2_IRQ 10
+
+#define ARCH_TIMER_S_EL1_IRQ  10
+#define ARCH_TIMER_NS_EL1_IRQ 11
+#define ARCH_TIMER_VIRT_IRQ   12
+#define ARCH_TIMER_NS_EL2_IRQ 13
 
 #define VIRTUAL_PMU_IRQ 7
 
