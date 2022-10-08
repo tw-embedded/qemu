@@ -28,6 +28,7 @@ enum {
     FAKE_UART,
     FAKE_GPIO,
     FAKE_VIRTIO,
+    FAKE_RTC,
     FAKE_SECURE_MEM
 };
 
@@ -42,6 +43,7 @@ static const MemMapEntry fake_memmap[] = {
     [FAKE_UART] =       { 0x20000000, 0x00001000 },
     [FAKE_GPIO] =       { 0x20001000, 0x00001000 },
     [FAKE_VIRTIO] =     { 0x20002000, 0x00000200 }, // size * NUM_VIRTIO_TRANSPORTS
+    [FAKE_RTC] =        { 0x20003000, 0x00001000 },
     [FAKE_MEM] =        { 0x30000000ULL, 0x40000000ULL },
 };
 
@@ -49,6 +51,7 @@ static const int fake_irqmap[] = {
     [FAKE_UART] = 0x10,
     [FAKE_GPIO] = 0x11,
     [FAKE_VIRTIO] = 0x12, /* + NUM_VIRTIO_TRANSPORTS */
+    [FAKE_RTC] =  0x1a
 };
 
 #define NUM_IRQS 256
@@ -194,6 +197,11 @@ static void create_virtio(FakeSocState *fss)
     }
 }
 
+static void create_rtc(FakeSocState *fss)
+{
+    sysbus_create_simple("pl031", fake_memmap[FAKE_RTC].base, qdev_get_gpio_in(fss->gic, fake_irqmap[FAKE_RTC]));
+}
+
 static void fake_realize(DeviceState *socdev, Error **errp)
 {
     FakeSocState *s = FAKE_SOC(socdev);
@@ -246,10 +254,10 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     // peripheral
 #define FAKE_SERIAL_INDEX 0
 #define FAKE_PFLASH_INDEX 0
-    //pl011_luminary_create(fake_memmap[FAKE_UART].base, qdev_get_gpio_in(gic, fake_irqmap[FAKE_UART]), serial_hd(0));
-    create_uart(s, FAKE_UART, system_mem, serial_hd(FAKE_SERIAL_INDEX));
+    create_uart(s, FAKE_UART, system_mem, serial_hd(FAKE_SERIAL_INDEX)); //pl011_luminary_create(fake_memmap[FAKE_UART].base, qdev_get_gpio_in(gic, fake_irqmap[FAKE_UART]), serial_hd(0));
     create_pflash(s, FAKE_NOR_FLASH, system_mem, drive_get(IF_PFLASH, 0, FAKE_PFLASH_INDEX)); /* Map legacy -drive if=pflash to machine properties */
     create_virtio(s);
+    create_rtc(s);
 }
 
 static void fake_class_init(ObjectClass *oc, void *data)
