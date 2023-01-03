@@ -29,6 +29,7 @@ enum {
     FAKE_GPIO,
     FAKE_VIRTIO,
     FAKE_RTC,
+    FAKE_MISC,
     FAKE_SECURE_MEM
 };
 
@@ -44,6 +45,7 @@ static const MemMapEntry fake_memmap[] = {
     [FAKE_GPIO] =       { 0x20001000, 0x00001000 },
     [FAKE_VIRTIO] =     { 0x20002000, 0x00000200 }, // size * NUM_VIRTIO_TRANSPORTS
     [FAKE_RTC] =        { 0x20003000, 0x00001000 },
+    [FAKE_MISC] =       { 0x20004000, 0x00001000 },
     [FAKE_MEM] =        { 0x30000000ULL, 0x40000000ULL },
 };
 
@@ -258,6 +260,9 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     create_pflash(s, FAKE_NOR_FLASH, system_mem, drive_get(IF_PFLASH, 0, FAKE_PFLASH_INDEX)); /* Map legacy -drive if=pflash to machine properties */
     create_virtio(s);
     create_rtc(s);
+
+    // others
+    sysbus_create_simple("fake.misc", fake_memmap[FAKE_MISC].base, NULL);
 }
 
 static void fake_class_init(ObjectClass *oc, void *data)
