@@ -2,7 +2,7 @@
 #include "qemu/units.h"
 #include "hw/arm/virt.h"
 
-#include "fake_soc.h"
+#include "fake/fake_soc.h"
 
 struct BzMachineState {
     MachineState parent;
