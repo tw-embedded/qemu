@@ -1,7 +1,7 @@
 arm_ss = ss.source_set()
 arm_ss.add(files('boot.c'), fdt)
-arm_ss.add(files('fake_soc.c'))
 arm_ss.add(files('baize_board.c'))
+arm_ss.add(files('fake/fake_soc.c'))
 arm_ss.add(files('fake/misc.c'))
 arm_ss.add(when: 'CONFIG_ARM_VIRT', if_true: files('virt.c'))
 arm_ss.add(when: 'CONFIG_ACPI', if_true: files('virt-acpi-build.c'))
