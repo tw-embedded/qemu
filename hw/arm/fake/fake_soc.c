@@ -209,13 +209,12 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     FakeSocState *s = FAKE_SOC(socdev);
 
     // cpus
-    Object *cpu0 = object_new(ARM_CPU_TYPE_NAME("cortex-a57"));
-    Object *cpu1 = object_new(ARM_CPU_TYPE_NAME("cortex-a57"));
-    qdev_realize(DEVICE(cpu0), NULL, NULL);
-    qdev_realize(DEVICE(cpu1), NULL, NULL);
-    object_property_set_bool(cpu0, "has_el3", true, NULL);
-    object_property_set_bool(cpu1, "has_el3", true, NULL);
-    s->smp_cpus = 2;
+    s->smp_cpus = 8;
+    for (int i = 0; i < s->smp_cpus; i++) {
+        Object *cpu = object_new(ARM_CPU_TYPE_NAME("cortex-a57"));
+        qdev_realize(DEVICE(cpu), NULL, NULL);
+        object_property_set_bool(cpu, "has_el3", true, NULL);
+    }
 
     // memory
     MemoryRegion *sram = g_new(MemoryRegion, 1);
@@ -226,9 +225,6 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     MemoryRegion *secram = g_new(MemoryRegion, 1);
     memory_region_init_ram(secram, NULL, "fake.secure-ram", fake_memmap[FAKE_SECURE_MEM].size, NULL);
     memory_region_add_subregion(system_mem, fake_memmap[FAKE_SECURE_MEM].base, secram);
-
-    object_property_set_link(cpu0, "memory", OBJECT(system_mem), NULL);
-    object_property_set_link(cpu1, "memory", OBJECT(system_mem), NULL);
 
     // interrupt
     create_gic(s);
@@ -251,7 +247,6 @@ static void fake_realize(DeviceState *socdev, Error **errp)
         error_report("Could not load ROM image '%s'", s->rom_file);
         exit(1);
     }
-    object_property_set_link(cpu0, "secure-memory", OBJECT(bootrom), NULL);
 
     // peripheral
 #define FAKE_SERIAL_INDEX 0
