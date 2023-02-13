@@ -56,6 +56,8 @@ static const int fake_irqmap[] = {
     [FAKE_RTC] =  0x1a
 };
 
+#define MAX_CPU_CNT_PER_CLUSTER 4
+
 #define NUM_IRQS 256
 
 #define ARCH_GIC_MAINT_IRQ  9
@@ -212,8 +214,10 @@ static void fake_realize(DeviceState *socdev, Error **errp)
     s->smp_cpus = 8;
     for (int i = 0; i < s->smp_cpus; i++) {
         Object *cpu = object_new(ARM_CPU_TYPE_NAME("cortex-a57"));
-        qdev_realize(DEVICE(cpu), NULL, NULL);
         object_property_set_bool(cpu, "has_el3", true, NULL);
+#define construct_aff(cpuid) ((((cpuid) / MAX_CPU_CNT_PER_CLUSTER) << ARM_AFF1_SHIFT) | ((cpuid) % MAX_CPU_CNT_PER_CLUSTER))
+        object_property_set_int(cpu, "mp-affinity", construct_aff(i), NULL);
+        qdev_realize(DEVICE(cpu), NULL, NULL);
     }
 
     // memory
