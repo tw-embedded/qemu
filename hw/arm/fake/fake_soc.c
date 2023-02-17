@@ -46,7 +46,7 @@ static const MemMapEntry fake_memmap[] = {
     [FAKE_VIRTIO] =     { 0x20002000, 0x00000200 }, // size * NUM_VIRTIO_TRANSPORTS
     [FAKE_RTC] =        { 0x20003000, 0x00001000 },
     [FAKE_MISC] =       { 0x20004000, 0x00001000 },
-    [FAKE_MEM] =        { 0x30000000ULL, 0x40000000ULL },
+    [FAKE_MEM] =        { 0x30000000ULL, 0x100000000ULL }, // 4G
 };
 
 static const int fake_irqmap[] = {
