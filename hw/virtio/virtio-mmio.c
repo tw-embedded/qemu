@@ -719,7 +719,7 @@ static void virtio_mmio_pre_plugged(DeviceState *d, Error **errp)
 static Property virtio_mmio_properties[] = {
     DEFINE_PROP_BOOL("format_transport_address", VirtIOMMIOProxy,
                      format_transport_address, true),
-    DEFINE_PROP_BOOL("force-legacy", VirtIOMMIOProxy, legacy, true),
+    DEFINE_PROP_BOOL("force-legacy", VirtIOMMIOProxy, legacy, false),
     DEFINE_PROP_BIT("ioeventfd", VirtIOMMIOProxy, flags,
                     VIRTIO_IOMMIO_FLAG_USE_IOEVENTFD_BIT, true),
     DEFINE_PROP_END_OF_LIST(),
