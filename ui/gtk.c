@@ -1334,13 +1334,67 @@ static gboolean gd_win_grab(void *opaque)
     return TRUE;
 }
 
-static void gd_menu_untabify(GtkMenuItem *item, void *opaque)
+static bool gd_get_forced_window_size(VirtualConsole *vc, int *width,
+                                      int *height)
 {
-    GtkDisplayState *s = opaque;
-    VirtualConsole *vc = gd_vc_find_current(s);
+    const char *sizes = g_getenv("QEMU_GTK_GFX_SIZES");
+    g_auto(GStrv) entries = NULL;
+    int index;
 
-    if (vc->type == GD_VC_GFX &&
-        qemu_console_is_graphic(vc->gfx.dcl.con)) {
+    if (!sizes || vc->type != GD_VC_GFX || !qemu_console_is_graphic(vc->gfx.dcl.con)) {
+        return false;
+    }
+
+    index = qemu_console_get_index(vc->gfx.dcl.con);
+    entries = g_strsplit(sizes, ",", -1);
+    if (!entries[index]) {
+        return false;
+    }
+
+    return sscanf(entries[index], "%dx%d", width, height) == 2 &&
+           *width > 0 && *height > 0;
+}
+
+static void gd_apply_forced_window_size(VirtualConsole *vc)
+{
+    GtkWidget *window;
+    int width;
+    int height;
+
+    if (!gd_get_forced_window_size(vc, &width, &height)) {
+        return;
+    }
+
+    window = vc->window ? vc->window : vc->s->window;
+    gtk_widget_set_size_request(vc->gfx.drawing_area, width, height);
+    gtk_window_resize(GTK_WINDOW(window), width, height);
+}
+
+static void gd_force_gfx_refresh(VirtualConsole *vc)
+{
+    if (vc->type != GD_VC_GFX || !qemu_console_is_graphic(vc->gfx.dcl.con)) {
+        return;
+    }
+
+    graphic_hw_invalidate(vc->gfx.dcl.con);
+    graphic_hw_update(vc->gfx.dcl.con);
+    if (gtk_widget_get_realized(vc->gfx.drawing_area)) {
+        gd_update_full_redraw(vc);
+    }
+}
+
+static void gd_detach_vc(GtkDisplayState *s, VirtualConsole *vc)
+{
+    bool is_graphic;
+
+    if (!vc) {
+        return;
+    }
+
+    is_graphic = vc->type == GD_VC_GFX &&
+                 qemu_console_is_graphic(vc->gfx.dcl.con);
+
+    if (is_graphic) {
         gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(s->grab_item),
                                        FALSE);
     }
@@ -1352,7 +1406,7 @@ static void gd_menu_untabify(GtkMenuItem *item, void *opaque)
             eglDestroySurface(qemu_egl_display, vc->gfx.esurface);
             vc->gfx.esurface = NULL;
         }
-        if (vc->gfx.esurface) {
+        if (vc->gfx.ectx) {
             eglDestroyContext(qemu_egl_display, vc->gfx.ectx);
             vc->gfx.ectx = NULL;
         }
@@ -1363,7 +1417,7 @@ static void gd_menu_untabify(GtkMenuItem *item, void *opaque)
                          G_CALLBACK(gd_tab_window_close), vc);
         gtk_widget_show_all(vc->window);
 
-        if (qemu_console_is_graphic(vc->gfx.dcl.con)) {
+        if (is_graphic) {
             GtkAccelGroup *ag = gtk_accel_group_new();
             gtk_window_add_accel_group(GTK_WINDOW(vc->window), ag);
 
@@ -1373,7 +1427,72 @@ static void gd_menu_untabify(GtkMenuItem *item, void *opaque)
         }
 
         gd_update_geometry_hints(vc);
+        gd_apply_forced_window_size(vc);
+        gd_force_gfx_refresh(vc);
         gd_update_caption(s);
+    }
+}
+
+static void gd_menu_untabify(GtkMenuItem *item, void *opaque)
+{
+    GtkDisplayState *s = opaque;
+    VirtualConsole *vc = gd_vc_find_current(s);
+
+    gd_detach_vc(s, vc);
+}
+
+static void gd_detach_extra_gfx_vcs(GtkDisplayState *s)
+{
+    const char *detach_gfx = g_getenv("QEMU_GTK_DETACH_GFX");
+    int i;
+
+    if (g_strcmp0(detach_gfx, "first") == 0) {
+        if (s->nb_vcs > 0) {
+            gd_detach_vc(s, &s->vc[0]);
+        }
+        if (s->nb_vcs > 1) {
+            gint page;
+
+            gd_apply_forced_window_size(&s->vc[1]);
+            page = gtk_notebook_page_num(GTK_NOTEBOOK(s->notebook),
+                                         s->vc[1].tab_item);
+            if (page >= 0) {
+                gtk_notebook_set_current_page(GTK_NOTEBOOK(s->notebook), page);
+            }
+        }
+        return;
+    }
+
+    if (g_strcmp0(detach_gfx, "second") == 0) {
+        if (s->nb_vcs > 1) {
+            gd_detach_vc(s, &s->vc[1]);
+        }
+        if (s->nb_vcs > 0) {
+            gint page;
+
+            gd_apply_forced_window_size(&s->vc[0]);
+            page = gtk_notebook_page_num(GTK_NOTEBOOK(s->notebook),
+                                         s->vc[0].tab_item);
+            if (page >= 0) {
+                gtk_notebook_set_current_page(GTK_NOTEBOOK(s->notebook), page);
+            }
+            gd_force_gfx_refresh(&s->vc[0]);
+        }
+        return;
+    }
+
+    if (s->nb_vcs > 0) {
+        gd_apply_forced_window_size(&s->vc[0]);
+        gd_force_gfx_refresh(&s->vc[0]);
+    }
+
+    for (i = 1; i < s->nb_vcs; i++) {
+        VirtualConsole *vc = &s->vc[i];
+
+        if (vc->type == GD_VC_GFX &&
+            qemu_console_is_graphic(vc->gfx.dcl.con)) {
+            gd_detach_vc(s, vc);
+        }
     }
 }
 
@@ -2393,6 +2512,12 @@ static void gtk_display_init(DisplayState *ds, DisplayOptions *opts)
     if (opts->u.gtk.has_show_tabs &&
         opts->u.gtk.show_tabs) {
         gtk_menu_item_activate(GTK_MENU_ITEM(s->show_tabs_item));
+    }
+    if (g_getenv("QEMU_GTK_DETACH_GFX")) {
+        gd_detach_extra_gfx_vcs(s);
+        if (g_strcmp0(g_getenv("QEMU_GTK_DETACH_GFX"), "first") != 0) {
+            gtk_notebook_set_current_page(GTK_NOTEBOOK(s->notebook), 0);
+        }
     }
     gd_clipboard_init(s);
 }

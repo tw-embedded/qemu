@@ -19,6 +19,9 @@
 #include "qemu/error-report.h"
 #include "trace.h"
 
+#define VIRTIO_GPU_MIN_BOOT_WIDTH  640
+#define VIRTIO_GPU_MIN_BOOT_HEIGHT 480
+
 void
 virtio_gpu_base_reset(VirtIOGPUBase *g)
 {
@@ -74,6 +77,12 @@ static void virtio_gpu_ui_info(void *opaque, uint32_t idx, QemuUIInfo *info)
     VirtIOGPUBase *g = opaque;
 
     if (idx >= g->conf.max_outputs) {
+        return;
+    }
+
+    if (info->width && info->height &&
+        (info->width < VIRTIO_GPU_MIN_BOOT_WIDTH ||
+         info->height < VIRTIO_GPU_MIN_BOOT_HEIGHT)) {
         return;
     }
 
